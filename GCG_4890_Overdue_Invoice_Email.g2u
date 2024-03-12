@@ -1,0 +1,234 @@
+Program.Sub.ScreenSU.Start
+Gui.Form..Create
+Gui.Form..Size(15360,1695)
+Gui.Form..MinX(0)
+Gui.Form..MinY(0)
+Gui.Form..Position(0,0)
+Gui.Form..BackColor(-2147483633)
+Gui.Form..MousePointer(0)
+Gui.Form..Event(UnLoad,Form_UnLoad)
+Gui.Form.proBar.Create(ProgressBar)
+Gui.Form.proBar.Size(14415,255)
+Gui.Form.proBar.Position(345,390)
+Program.Sub.ScreenSU.End
+
+Program.Sub.Preflight.Start
+Variable.UDT.uInvoice.Define("sCust",String,Customer)
+Variable.UDT.uInvoice.Define("sInvoice",String,Invoice)
+Variable.UDT.uInvoice.Define("bBal",Boolean)
+Variable.uGlobal.uInvoice.Declare("uInvoice")
+
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+F.Intrinsic.Control.SetErrorHandler("Main_Err")
+F.Intrinsic.Control.ClearErrors
+Variable.Local..BulkDeclareString(sError,sSql,sDate,sFile)
+Variable.Local..BulkDeclareBoolean(bExists)
+
+'Callwrapper parameters
+'3050 - Print customer statements - AR0140GI
+'Parameters:
+'Start'End'Date'Attn'"Y": Yes'"N": No'Country'"Y": Yes'"N": No'Total'"Y": Yes'"N": No'Heading Date'Beginning Branch'Ending Branch'Branch'"Y": Yes'"N": No
+'Print Zero'"Y": Yes'"N": No
+
+'This program was create for Sjogren by SKC on 1/13/2016
+'This will check AR open Items to see if the customer has an outstanding balance and if so an AR Statement will be emailed to the company
+'This will run on the Task Scheduler
+
+'BN, Dec 28, 2017
+'This project 4890 created for G D Roberts, Inc. & Fisk Tank will modify ARC 3529 so that the Email address is coming from the Customer Master E- Invoice instead of the CRM.
+'Set the Sender Email to accountsreceivable@fiskinc.net
+
+F.ODBC.Connection!conx.OpenConnection(V.Ambient.PDSN,V.Ambient.PUser,V.Ambient.PPass,3500)
+
+
+'Get today date and format
+F.Intrinsic.String.Format(v.Ambient.Date,"YYYYMMDD",v.Local.sDate)
+F.Intrinsic.String.Build("Select customer, Invoice from AR_Open_Items where Due_Date < '{0}' and Batch_Code = '10'",v.Local.sDate,v.Local.sSql)
+
+F.ODBC.Connection!conx.OpenLocalRecordsetRO("rstInvoice",V.Local.sSql)
+F.Intrinsic.Control.If(V.ODBC.conx!rstInvoice.EOF,=,False)
+	'Need to save to a udt
+	F.Intrinsic.Variable.LoadUDTFromRecordset("conx","rstInvoice","v.uGlobal.uInvoice",False)
+F.Intrinsic.Control.EndIf
+F.ODBC.conx!rstInvoice.Close
+
+'Check DIR, if not exists, create one
+F.Intrinsic.String.Build("{0}\OVERDUE_Statements",v.Caller.DocDir,v.Local.sFile)
+F.Intrinsic.File.DirExists(v.Local.sFile,v.Local.bExists)
+F.Intrinsic.Control.If(v.local.bExists,=,False)
+	F.Intrinsic.File.CreateDir(v.Local.sFile)
+F.Intrinsic.Control.Endif
+
+F.Intrinsic.Control.CallSub(Checkbalance)
+F.Intrinsic.Control.CallSub(Emailar,"sDate",v.Local.sDate,"sFile",v.Local.sFile)
+F.Intrinsic.Control.CallSub(Unload)
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Main_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4890_Overdue_Invoice_Email.g2u",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.Debug.SetLA(V.Local.sError)
+Function.Intrinsic.Control.EndIf
+
+Program.Sub.Main.End
+
+Program.Sub.CheckBalance.Start
+F.Intrinsic.Control.SetErrorHandler("CheckBalance_Err")
+F.Intrinsic.Control.ClearErrors
+Variable.Local..BulkDeclareString(sError,sBalance)
+Variable.Local..BulkDeclareLong(iCount)
+
+'Loop to get the Balance, flag if 0
+F.Intrinsic.Control.For(V.Local.iCount,V.uGlobal.uInvoice.LBound,V.uGlobal.uInvoice.UBound,1)
+	'Returns Debit amount*!*Credit amount*!*Remaining amount
+	F.Global.Accounting.GetARItemStatus(v.uGlobal.uInvoice(v.Local.iCount)!sCust.PSQLFriendly,v.uGlobal.uInvoice(v.Local.iCount)!sInvoice,v.Local.sBalance)
+	'This should asways return something since we are getting batch 10 records to begin with.
+	F.Intrinsic.String.Split(v.Local.sBalance,"*!*",v.Local.sBalance)
+	v.Local.sBalance.RedimPreserve(0,2)
+	'If balance set true else False
+	F.Intrinsic.Control.If(V.Local.sBalance(2),<>," ")
+		F.Intrinsic.Control.If(v.Local.sBalance(2).Float,>,0)
+			v.uGlobal.uInvoice(v.Local.iCount)!bBal.Set(True)
+		F.Intrinsic.Control.Else
+			v.uGlobal.uInvoice(v.Local.iCount)!bBal.Set(False)
+		F.Intrinsic.Control.EndIf
+	F.Intrinsic.Control.Else
+		v.uGlobal.uInvoice(v.Local.iCount)!bBal.Set(False)
+	F.Intrinsic.Control.EndIf
+F.Intrinsic.Control.Next(V.Local.iCount)
+
+'remove those that have no balance
+F.Intrinsic.Variable.UDTMultiFlag(V.uGlobal.uInvoice!bBal,False)
+F.Intrinsic.Variable.UDTDeleteFlagged(V.uGlobal.uInvoice)
+'Remove the duplicate customers.  The AR Statement will be for all Outstanding items
+F.Intrinsic.Variable.UDTMultiFlagDuplicates(V.uGlobal.uInvoice!sCust)
+F.Intrinsic.Variable.UDTDeleteFlagged(V.uGlobal.uInvoice)
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("CheckBalance_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4890_Overdue_Invoice_Email.g2u",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.Debug.SetLA(V.Local.sError)
+Function.Intrinsic.Control.EndIf
+Program.Sub.CheckBalance.End
+
+Program.Sub.EmailAR.Start
+F.Intrinsic.Control.SetErrorHandler("EmailAR_Err")
+F.Intrinsic.Control.ClearErrors
+Variable.Local..BulkDeclareString(sError,sParam,sVal,sSql,sFileName,sFilePath,sFilePathQueueMsg,sRecipient,sRecipientEmail,sSenderEmail,sSender,sBody,slogo,sDate,sTime,sRet)
+Variable.Local..BulkDeclareLong(iCount,iID,lBIRunID,lLogID,iRet,i)
+
+'BN should check to pass fiskinc logo
+'V.Local.slogo.Set("\\File2\apps\Global\LOGOS\SIILOGO.bmp")
+
+F.Global.BI.GetRunID(V.Local.lBIRunID)
+F.Global.BI.StartLogging(V.Local.lBIRunID,562,0,"",V.Local.lLogID)
+f.Global.Security.GetUserId("SUPERVSR",v.Caller.CompanyCode,v.Local.iID)
+F.Intrinsic.String.Format(v.Ambient.Date,"MMDDYY",v.Local.sDate)
+
+'BN Dec 28, 2017
+V.Local.sSenderEmail.Set("accountsreceivable@fiskinc.net")
+
+'Get company Name
+V.Local.sSql.Set("Select Text1 from Op_Header where ID = '401942' and Sequence = '0000'")
+F.ODBC.Connection!conx.OpenLocalRecordsetRO("rstName",V.Local.sSql)
+F.Intrinsic.Control.If(V.ODBC.conx!rstName.EOF,=,False)
+	V.Local.sSender.Set(V.ODBC.conx!rstName.FieldValTrim!text1)
+F.Intrinsic.Control.EndIf
+F.ODBC.conx!rstName.Close
+
+'String together for queue message
+F.Intrinsic.String.Build("{0}*!*{1}",V.Local.sSenderEmail,V.Local.sSender,V.Local.sSender)
+
+
+F.Intrinsic.Control.If(V.uGlobal.uInvoice.LBound,>,-1)
+
+	F.Intrinsic.Control.For(V.Local.iCount,V.uGlobal.uInvoice.LBound,V.uGlobal.uInvoice.UBound,1)
+		F.Intrinsic.String.Build("{0}!*!{0}!*!{1}!*!Y!*!N!*!Y!*!{3}!*!{2}!*!{2}!*!N!*!N",V.uGlobal.uInvoice(V.Local.iCount)!sCust.PSQLFriendly,V.Args.SDate," ",V.Local.sDate,V.Local.sParam)
+		'This one needs an email, Create the PDF then send it.
+		F.Global.General.CallWrapperSyncBIO(3050,v.Local.sParam)
+		V.Local.sParam.Set("Terminal*!*ReportID*!*ATTN*!*Title1*!*Title2*!*Title3*!*Title4*!*Logo")
+		F.Intrinsic.String.Build("{0}*!*000562*!*Y*!**!**!**!**!*{1}",V.Caller.Terminal,V.local.slogo.trim,V.Local.sVal)
+		
+		'Build file name and path
+		f.Intrinsic.String.Format(v.Ambient.Now,"HhNnSs",v.Local.sTime)
+		F.Intrinsic.String.Build("{0}_{1}_{2}.pdf",V.uGlobal.uInvoice(v.Local.iCount)!sCust,v.Local.sDate,v.Local.sTime,V.Local.sFileName)
+		F.Intrinsic.String.Build("{0}\{1}",V.Args.sFile,v.Local.sFileName,V.Local.sFilePath)
+		
+		'Save invoice PDF
+		F.Global.BI.RunReportPreProcessor(V.Local.lBIRunID,V.Local.lLogID,V.Local.sParam,V.Local.sVal,"",4,True,"",-1,"",0,V.Local.sFilePath,"",V.Local.iRet)
+	
+		'Build body text
+		v.Local.sBody.Set("Dear Customer;")
+		f.Intrinsic.String.Build("{0}{1}You are receiving this statement because your account is Past Due.  Please review statement and remit payment at your earliest convenience.  Please reply with any questions by e-mail to accountsreceivable@fiskinc.net or feel free to call 920-623-3979.",v.Local.sBody,v.Ambient.NewLine,v.Local.sBody)
+		f.Intrinsic.String.Build("{0}{1}Thanks,",v.Local.sBody,v.Ambient.NewLine,v.Local.sBody)
+		f.Intrinsic.String.Build("{0}{1}Office Manager",v.Local.sBody,v.Ambient.NewLine,v.Local.sBody)
+		f.Intrinsic.String.Build("{0}{1}G.D. Roberts & Co, Inc",v.Local.sBody,v.Ambient.NewLine,v.Local.sBody)
+
+	
+		'get customer Email
+		f.Intrinsic.String.Build("Select ADDL_EMAILS FROM PPT_EINV_COPT WHERE CUSTOMER_ID = '{0}'",V.uGlobal.uInvoice(v.Local.iCount)!sCust.PSQLFriendly,V.Local.sSql)
+		f.ODBC.Connection!conx.ExecuteAndReturn(v.Local.sSql,v.Local.sRet)
+		f.Intrinsic.Control.If(v.Local.sRet.Trim,<>,"")
+			f.Intrinsic.String.Split(v.Local.sRet.Trim,",",v.Local.sRet)
+			f.Intrinsic.Control.For(v.Local.i,0,v.Local.sRet.UBound,1)				
+				V.Local.sRecipient.Set(V.uGlobal.uInvoice(v.Local.iCount)!sCust.PSQLFriendly)
+				V.Local.sRecipientEmail.Set(v.Local.sRet(v.Local.i))
+				F.Intrinsic.String.Build("{0}*!*{1}",V.Local.sRecipient,V.Local.sRecipientEmail.Trim,V.Local.sRecipient)			
+				F.Intrinsic.String.Build("{0}*!*{1}\",v.Local.sFileName,V.Args.sFile,V.Local.sFilePathQueueMsg)
+				'Send the email.
+				F.Global.Messaging.QueueMessage(v.Caller.CompanyCode,v.Local.iID,"AR Email","AR Statement",v.Local.sSender,v.Local.sRecipient,v.Local.sBody,5,,False,,,,,,,,v.Local.sFilePathQueueMsg,False)
+				
+			f.Intrinsic.Control.Next(v.Local.i)
+		
+		f.Intrinsic.Control.EndIf	
+		
+	
+	F.Intrinsic.Control.Next(V.Local.iCount)
+
+F.Intrinsic.Control.EndIf
+
+F.Global.BI.StopLogging(V.Local.lLogID)
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("EmailAR_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4890_Overdue_Invoice_Email.g2u",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.Debug.SetLA(V.Local.sError)
+Function.Intrinsic.Control.EndIf
+
+Program.Sub.EmailAR.End
+
+Program.Sub.Unload.Start
+F.Intrinsic.Control.SetErrorHandler("Unload_Err")
+F.Intrinsic.Control.ClearErrors
+
+V.Local.sError.Declare(String)
+
+F.ODBC.Connection!conx.Close
+F.Intrinsic.Control.End
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Unload_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Project: GCG_4890_Overdue_Invoice_Email.g2u",V.Ambient.Newline,V.Ambient.Newline,"Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.Debug.SetLA(V.Local.sError)
+Function.Intrinsic.Control.EndIf
+Program.Sub.Unload.End
+
+Program.Sub.Form_UnLoad.Start
+Program.Sub.Form_UnLoad.End
+
+Program.Sub.Comments.Start
+${$0$}$GCG_SJO_3529_Invoice_Email$}$SKT$}$1/8/2016 3:54:37 PM$}$False
+${$3$}$0$}$$}$0$}$-1$}$$}$12:00:00 AM$}$This project will check AR open items and gather all invoices for a customer that are dated prior to the current date.  It will then loop through all the invoice to see if there is an outstanding balance.  If there is an outstanding balance the customer is flagged to receive an Email containing the core AR statement.  This Statement will contain the details of all invoice and the amount paid along with the amount still outstanding and how late the payment is.  This will be run on the Task Scheduler once a week after hours.
+
+
+Program.Sub.Comments.End
+
